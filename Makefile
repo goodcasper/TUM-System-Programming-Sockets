@@ -6,7 +6,9 @@ CXX ?= c++
 CXXFLAGS ?= -g -Wall -O0
 CARGO ?= cargo
 RUSTFLAGS ?= -g
-LDFLAGS = -lprotobuf -labsl_log_internal_check_op -labsl_log_internal_message -labsl_raw_logging_internal -labsl_spinlock_wait -lpthread
+LDFLAGS = -lprotobuf -lpthread
+
+# LDFLAGS = -lprotobuf -labsl_log_internal_check_op -labsl_log_internal_message -labsl_raw_logging_internal -labsl_spinlock_wait -lpthread
 # -labsl are required on arch based system
 
 .PHONY: all clean
@@ -18,17 +20,17 @@ clean:
 
 # --- C++ build steps ---
 
-# message.pb.cc: message.proto
-# 	protoc --cpp_out=. $^
+message.pb.cc: message.proto
+	protoc --cpp_out=. $^
 
-# libutils.so: utils.cpp message.pb.cc
-# 	$(CXX) $(CXXFLAGS) -shared -fPIC -o $@ utils.cpp message.pb.cc $(LDFLAGS)
+libutils.so: utils.cpp message.pb.cc
+	$(CXX) $(CXXFLAGS) -shared -fPIC -o $@ utils.cpp message.pb.cc $(LDFLAGS)
 
-# server: server.cpp libutils.so message.pb.cc
-# 	$(CXX) $(CXXFLAGS) -o $@ server.cpp message.pb.cc -L. -Wl,-rpath=. -lutils $(LDFLAGS)
+server: server.cpp libutils.so message.pb.cc
+	$(CXX) $(CXXFLAGS) -o $@ server.cpp message.pb.cc -L. -Wl,-rpath=. -lutils $(LDFLAGS)
 
-# client: client.cpp libutils.so message.pb.cc
-# 	$(CXX) $(CXXFLAGS) -o $@ client.cpp message.pb.cc -L. -Wl,-rpath=. -lutils $(LDFLAGS)
+client: client.cpp libutils.so message.pb.cc
+	$(CXX) $(CXXFLAGS) -o $@ client.cpp message.pb.cc -L. -Wl,-rpath=. -lutils $(LDFLAGS)
 
 # --- Rust build steps ---
 
