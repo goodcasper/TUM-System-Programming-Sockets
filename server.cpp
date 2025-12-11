@@ -6,8 +6,8 @@
 #include <mutex>
 #include <queue>
 #include <cstdlib>
-#include <unistd.h>      // close, pipe, read, write
-#include <sys/select.h>  // select
+#include <unistd.h>     
+#include <sys/select.h>  
 #include <errno.h>
 #include <algorithm>
 
@@ -29,7 +29,7 @@ struct Worker {
     std::vector<int> sockets;     // 目前由這個 worker 管理的 client fd
 
     std::mutex new_conn_mutex;             // 保護 new_connections
-    std::queue<int> new_connections;       // main thread newly assigned fds
+    std::queue<int> new_connections;      
 };
 
 // worker thread 主迴圈：使用 select() 同時處理多個連線
@@ -75,7 +75,7 @@ void worker_loop(Worker *worker) {
             continue;
         }
 
-        // 3) 若 wakeup pipe 有資料，讀掉以清除喚醒信號
+        // 若 wakeup pipe 有資料，讀掉以清除喚醒信號
         if (FD_ISSET(worker->wakeup_read_fd, &readfds)) {
             char buf[64];
             // 把 pipe 中累積的喚醒字節讀光
@@ -90,7 +90,7 @@ void worker_loop(Worker *worker) {
             }
         }
 
-        // 4) 處理每個有資料可讀的 client socket
+        // 處理每個有資料可讀的 client socket
         std::vector<int> to_remove;  // 結束的連線要從 sockets 列表移除
 
         for (int fd : snapshot) {
@@ -116,7 +116,7 @@ void worker_loop(Worker *worker) {
                 // 取得目前 counter
                 int64_t current = number.load(std::memory_order_relaxed);
 
-                // 回傳 COUNTER 給 client
+               
                 if (send_msg(fd, OPERATION_COUNTER, current) != 0) {
                     // 傳失敗就當作連線結束
                 }
@@ -165,14 +165,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // 1) 建立 listening socket
+    // 建立 listening socket
     int listen_fd = listening_socket(port);
     if (listen_fd < 0) {
         std::cerr << "failed to create listening socket on port " << port << "\n";
         return 1;
     }
 
-    // 2) 建立 worker threads
+    // 建立 worker threads
     std::vector<Worker> workers(numThreads);
 
     for (int i = 0; i < numThreads; ++i) {
@@ -187,7 +187,7 @@ int main(int argc, char *argv[]) {
         workers[i].thread = std::thread(worker_loop, &workers[i]);
     }
 
-    // 3) 主 thread：接受連線並分配給 workers
+    // 主thread：接受連線並分配給 workers
     int64_t connection_count = 0;
 
     while (true) {
@@ -221,13 +221,7 @@ int main(int argc, char *argv[]) {
         (void)n; // 忽略寫入失敗情況，最差下次 select 超時再處理
     }
 
-    // 理論上 server 是 long-running，不會走到這裡
-    // 不過為了完整性，若日後要優雅關閉，可在此 join threads。
-    // for (auto &w : workers) {
-    //     if (w.thread.joinable()) {
-    //         w.thread.join();
-    //     }
-    // }
+    
 
     return 0;
 }
