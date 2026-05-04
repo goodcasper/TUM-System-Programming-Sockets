@@ -12,6 +12,7 @@
 static std::mutex cout_mutex;
 static std::mutex cerr_mutex;
 
+// 連線 → 送一堆操作 → 送結束信號 → 等回覆 → 印出結果 → 關閉
 void client_worker(int thread_id,
                    const std::string host,
                    int port,
@@ -31,7 +32,7 @@ void client_worker(int thread_id,
   
     // 每個 client thread 都會對 server 的共享 counter 產生操作。
     for (int i = 0; i < num_messages; ++i) {
-        int32_t op_type;
+        int32_t op_type; // 永遠是4 byte int 有可能依據平台變動而不同
         int64_t arg;
 
         if (i % 2 == 0) {
@@ -44,7 +45,7 @@ void client_worker(int thread_id,
             arg = static_cast<int64_t>(sub);
         }
 
-        // 將要求序列化成 protobuf 後送出
+        // 將要求序列化成 protobuf 後送到sever.  server那裡有用read在等
         if (send_msg(sockfd, op_type, arg) != 0) {
             std::lock_guard<std::mutex> lock(cerr_mutex);
             std::cerr << "Thread " << thread_id
@@ -54,7 +55,7 @@ void client_worker(int thread_id,
         }
     }
 
-    
+    // 傳完加減操作傳終止訊息 server那裡有用read在等
     // 要求 server 回傳目前的 counter。
     if (send_msg(sockfd, OPERATION_TERMINATION, 0) != 0) {
         std::lock_guard<std::mutex> lock(cerr_mutex);
@@ -69,7 +70,7 @@ void client_worker(int thread_id,
     int32_t resp_type = 0;
     int64_t counter_value = 0;
 
-    // server 的回覆也同樣是 protobuf 格式，透過 recv_msg 反序列化讀取
+    // server 的回覆也同樣是 protobuf 格式，透過 recv_msg 反序列化讀取counter的值
     if (recv_msg(sockfd, &resp_type, &counter_value) != 0) {
         std::lock_guard<std::mutex> lock(cerr_mutex);
         std::cerr << "Thread " << thread_id
@@ -89,7 +90,7 @@ void client_worker(int thread_id,
 
    
     {
-        std::lock_guard<std::mutex> lock(cout_mutex);
+        std::lock_guard<std::mutex> lock(cout_mutex); // 建立 lock 這個物件，同時自動鎖住 cout_mutex，當 lock 離開作用域時自動解鎖
         std::cout << counter_value << std::endl;
     }
 
@@ -125,6 +126,7 @@ int main(int argc, char *argv[]) {
     threads.reserve(num_threads);
 
     for (int i = 0; i < num_threads; ++i) {
+        // 建立thread並讓他執行client_worker
         threads.emplace_back(client_worker,
                              i,
                              host,

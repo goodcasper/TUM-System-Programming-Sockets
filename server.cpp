@@ -13,7 +13,8 @@
 
 #include "utils.h"
 
-// 全域 counter（需求：server 管理一個 global counter，原子更新）
+// 全域 counter 
+// 原子：確保操作這個變數的時候 是不會被中斷的    原子保護單一變數 mutex保護一段程式碼
 std::atomic<int64_t> number{0};
 
 // 印到 stdout 時要加鎖，避免多個 thread 把數字黏在同一行
@@ -29,15 +30,15 @@ struct Worker {
     std::vector<int> sockets;     // 目前由這個 worker 管理的 client fd
 
     std::mutex new_conn_mutex;             // 保護 new_connections
-    std::queue<int> new_connections;      
+    std::queue<int> new_connections;      // 尚未處理的
 };
 
 // worker thread 主迴圈：使用 select() 同時處理多個連線
 void worker_loop(Worker *worker) {
     while (true) {
-        // 1) 把 main thread 指派的新連線搬進 sockets
+        // 1) 把 main thread 指派的新連線搬進 sockets，new_connections（暫存區）→ sockets（正式工作清單）
         {
-            std::lock_guard<std::mutex> lock(worker->new_conn_mutex);
+            std::lock_guard<std::mutex> lock(worker->new_conn_mutex); // 保護work thread 跟 main thread
             while (!worker->new_connections.empty()) {
                 int fd = worker->new_connections.front();
                 worker->new_connections.pop();
@@ -47,11 +48,11 @@ void worker_loop(Worker *worker) {
         }
 
         // 2) 準備 select 的 fd_set
-        fd_set readfds;
-        FD_ZERO(&readfds);
+        fd_set readfds; // 監聽清單
+        FD_ZERO(&readfds); // 清空
 
         int maxfd = worker->wakeup_read_fd;
-        FD_SET(worker->wakeup_read_fd, &readfds);
+        FD_SET(worker->wakeup_read_fd, &readfds); // select() 會卡住等待，但如果 main thread 分配了新連線進來，需要通知 worker thread 趕快去處理 就是用wakeup_read_fd 不然會一直卡在select等新訊息
 
         std::vector<int> snapshot;
         {
@@ -59,22 +60,24 @@ void worker_loop(Worker *worker) {
             snapshot = worker->sockets;  // 做一份副本，避免 select 期間持有鎖
         }
 
-        for (int fd : snapshot) {
+        for (int fd : snapshot) { // 把socket有的都加到監聽清單
             FD_SET(fd, &readfds);
             if (fd > maxfd) {
-                maxfd = fd;
+                maxfd = fd; // 找所有 fd 裡面最大的值，因為 select() 的第一個參數需要傳入最大的 fd + 1
             }
         }
 
+        // 同時監聽很多個 fd，只要其中任何一個有資料，就醒來告訴你是哪個，原本是卡住的狀態
         int ret = select(maxfd + 1, &readfds, nullptr, nullptr, nullptr);
         if (ret < 0) {
             if (errno == EINTR) {
                 continue; // 被 signal 打斷就重來
             }
-            // 其他錯誤：繼續 looping（實務上可加錯誤處理，但作業不強制）
+            // 其他錯誤
             continue;
         }
 
+        // FD_ISSET 檢查某個 fd 是否有事件發生
         // 若 wakeup pipe 有資料，讀掉以清除喚醒信號
         if (FD_ISSET(worker->wakeup_read_fd, &readfds)) {
             char buf[64];
@@ -93,7 +96,7 @@ void worker_loop(Worker *worker) {
         // 處理每個有資料可讀的 client socket
         std::vector<int> to_remove;  // 結束的連線要從 sockets 列表移除
 
-        for (int fd : snapshot) {
+        for (int fd : snapshot) { // 遍歷每個被監聽的連線
             if (!FD_ISSET(fd, &readfds)) {
                 continue;
             }
@@ -109,7 +112,8 @@ void worker_loop(Worker *worker) {
             }
 
             if (op_type == OPERATION_ADD) {
-                number.fetch_add(arg, std::memory_order_relaxed);
+                number.fetch_add(arg, std::memory_order_relaxed); // atomic 提供的函式，意思是原子地把值加上 arg。
+                // memory_order 就是用來控制允許重排到什麼程度 (編譯器會為了效率而重排指令)，relaxed就是只要保證操作是原子的就好
             } else if (op_type == OPERATION_SUB) {
                 number.fetch_sub(arg, std::memory_order_relaxed);
             } else if (op_type == OPERATION_TERMINATION) {
@@ -144,8 +148,8 @@ void worker_loop(Worker *worker) {
             for (int fd_close : to_remove) {
                 auto it = std::remove(worker->sockets.begin(),
                                       worker->sockets.end(),
-                                      fd_close);
-                worker->sockets.erase(it, worker->sockets.end());
+                                      fd_close); // 把要移除的移動到尾端 並回傳該位置
+                worker->sockets.erase(it, worker->sockets.end()); // 刪除從起始到結束之間的所有元素
             }
         }
     }
@@ -177,21 +181,21 @@ int main(int argc, char *argv[]) {
 
     for (int i = 0; i < numThreads; ++i) {
         int pipefd[2];
-        if (pipe(pipefd) != 0) {
+        if (pipe(pipefd) != 0) { // pipe() 會建立兩個 fd (os分配)，存在 pipefd 陣列裡
             std::cerr << "failed to create pipe for worker " << i << "\n";
             return 1;
         }
         workers[i].wakeup_read_fd = pipefd[0];
         workers[i].wakeup_write_fd = pipefd[1];
 
-        workers[i].thread = std::thread(worker_loop, &workers[i]);
+        workers[i].thread = std::thread(worker_loop, &workers[i]); // 第一個參數為這個 thread 要執行的函式 後面是這個函式的參數
     }
 
     // 主thread：接受連線並分配給 workers
     int64_t connection_count = 0;
 
     while (true) {
-        int client_fd = accept_connection(listen_fd);
+        int client_fd = accept_connection(listen_fd); // 卡住等待 直到client發起連線
         if (client_fd < 0) {
             if (errno == EINTR) {
                 continue;
@@ -201,13 +205,13 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        int idx = 0;
+        int idx = 0; // 看要分配到哪個worker
         if (numThreads > 0) {
             idx = static_cast<int>(connection_count % numThreads);
         }
         ++connection_count;
 
-        Worker &w = workers[idx];
+        Worker &w = workers[idx]; // // w 就是 workers[idx]，兩個名字指向同一個東西
 
         // 新連線加入 worker 的 new_connections
         {
@@ -217,7 +221,7 @@ int main(int argc, char *argv[]) {
 
         // 通知 worker，有新的 fd 要處理
         char c = 'x';
-        ssize_t n = write(w.wakeup_write_fd, &c, 1);
+        ssize_t n = write(w.wakeup_write_fd, &c, 1); // 第一個參數是寫入的管道(fd) 第二個是寫入資料的記憶體位址 第三個是要寫入的bytes
         (void)n; // 忽略寫入失敗情況，最差下次 select 超時再處理
     }
 
